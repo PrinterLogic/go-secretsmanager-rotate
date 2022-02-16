@@ -5,8 +5,8 @@ import (
 	"github.com/printerlogic/go-secretsmanager-rotate"
 )
 
-// Parser is a rotate.SecretParser that will unmarshal into structs returned by the backing factory function
-// The backing factory function must return an instance value. The pointer will be used directly with the json.Unmarshaler
+// Parser is a rotate.SecretParser that will unmarshal into structs returned by the backing factory function.
+// The backing factory function must return an instance value as the pointer will be used directly with the json.Unmarshaler
 type Parser func() rotate.Secret
 
 func (factory Parser) Parse(s rotate.Secret) (rotate.Secret, error) {

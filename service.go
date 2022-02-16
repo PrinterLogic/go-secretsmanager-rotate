@@ -53,6 +53,11 @@ func (s StringSecret) Value() ([]byte, error) {
 	return []byte(s), nil
 }
 
+// Ensure that StringSecret remains Secret compatible
+func _(s StringSecret) Secret {
+	return s
+}
+
 type BinarySecret []byte
 
 func (b BinarySecret) Binary() bool {
@@ -61,6 +66,11 @@ func (b BinarySecret) Binary() bool {
 
 func (b BinarySecret) Value() ([]byte, error) {
 	return b, nil
+}
+
+// Ensure that BinarySecret remains Secret compatible
+func _(s BinarySecret) Secret {
+	return s
 }
 
 func OutputAsSecret(secretValue *secretsmanager.GetSecretValueOutput) Secret {
