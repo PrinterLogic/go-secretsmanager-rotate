@@ -14,9 +14,9 @@ type Handler interface {
 }
 
 type Config struct {
-	SecretsManagerClient *secretsmanager.Client
-	SecretService        Service
-	Timeout              time.Duration
+	SecretsManager SecretsManagerApi
+	Service        Service
+	Timeout        time.Duration
 }
 
 func New(c Config) Handler {
@@ -24,23 +24,30 @@ func New(c Config) Handler {
 		c.Timeout = time.Second
 	}
 	return &rotator{
-		client:         c.SecretsManagerClient,
-		service:        c.SecretService,
+		api:            c.SecretsManager,
+		service:        c.Service,
 		logger:         log.New(os.Stdout, "", log.LstdFlags|log.Lshortfile),
 		networkTimeout: c.Timeout,
 	}
 }
 
+// SecretsManagerApi
+type SecretsManagerApi interface {
+	GetSecretValue(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
+	PutSecretValue(ctx context.Context, params *secretsmanager.PutSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error)
+	UpdateSecretVersionStage(ctx context.Context, params *secretsmanager.UpdateSecretVersionStageInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.UpdateSecretVersionStageOutput, error)
+}
+
 type rotator struct {
-	client         *secretsmanager.Client
+	api            SecretsManagerApi
 	service        Service
 	logger         *log.Logger
 	networkTimeout time.Duration
 }
 
 func (r *rotator) Handle(ctx context.Context, event Event) error {
-	defer r.logPrefixf("[%s]", event.Step)()
-	r.logger.Println("Evaluating rotation for secret: %s and version: %s", event.SecretId, event.ClientRequestToken)
+	defer r.logPrefixf("[%s] ", event.Step)()
+	r.logger.Printf("Evaluating rotation for secret: %s and version: %s", event.SecretId, event.ClientRequestToken)
 
 	switch event.Step {
 	case StepCreate:
@@ -133,20 +140,30 @@ func (r *rotator) test(ctx context.Context, event Event) error {
 }
 
 func (r *rotator) finish(ctx context.Context, event Event) error {
-	err := func() error {
+	currentVersion, _, err := r.secretByStage(ctx, event.SecretId, AWSCURRENT)
+	if err != nil {
+		return err
+	}
+
+	if currentVersion == event.ClientRequestToken {
+		r.logger.Println(AWSCURRENT + " is already set to " + event.ClientRequestToken)
+		return nil
+	}
+
+	pendingVersion, pending, err := r.secretByStage(ctx, event.SecretId, AWSPENDING)
+	if err != nil {
+		return err
+	}
+
+	if pendingVersion != event.ClientRequestToken {
+		r.logger.Println(AWSPENDING + " is not currently set to " + event.ClientRequestToken)
+		return nil
+	}
+
+	err = func() error {
 		finisher, ok := r.service.(FinishingService)
 		if !ok {
 			r.logger.Println("Service does not want to intercept FINISH actions")
-			return nil
-		}
-
-		pendingVersion, pending, err := r.secretByStage(ctx, event.SecretId, AWSPENDING)
-		if err != nil {
-			return err
-		}
-
-		if pendingVersion != event.ClientRequestToken {
-			r.logger.Println(AWSPENDING + " is not currently set to " + event.ClientRequestToken)
 			return nil
 		}
 
@@ -156,7 +173,7 @@ func (r *rotator) finish(ctx context.Context, event Event) error {
 		return err
 	}
 
-	return r.setCurrentSecret(ctx, event)
+	return r.setCurrentSecret(ctx, event, currentVersion)
 }
 
 const (
@@ -168,7 +185,7 @@ func (r *rotator) secretByStage(ctx context.Context, secretId string, stage stri
 	ctx, cancel := r.network(ctx)
 	defer cancel()
 
-	output, err := r.client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
+	output, err := r.api.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
 		SecretId:     &secretId,
 		VersionStage: &stage,
 	})
@@ -201,25 +218,20 @@ func (r *rotator) putPendingSecret(ctx context.Context, event Event, value Secre
 		input.SecretString = &str
 	}
 
-	_, err = r.client.PutSecretValue(ctx, input)
+	_, err = r.api.PutSecretValue(ctx, input)
 	return err
 }
 
-func (r *rotator) setCurrentSecret(ctx context.Context, event Event) error {
-	currentVersion, _, err := r.secretByStage(ctx, event.SecretId, AWSCURRENT)
-	if err != nil {
-		return err
-	}
-
+func (r *rotator) setCurrentSecret(ctx context.Context, event Event, existingVersion string) error {
 	ctx, cancel := r.network(ctx)
 	defer cancel()
 
 	stage := AWSCURRENT
-	_, err = r.client.UpdateSecretVersionStage(ctx, &secretsmanager.UpdateSecretVersionStageInput{
+	_, err := r.api.UpdateSecretVersionStage(ctx, &secretsmanager.UpdateSecretVersionStageInput{
 		SecretId:            &event.SecretId,
 		VersionStage:        &stage,
 		MoveToVersionId:     &event.ClientRequestToken,
-		RemoveFromVersionId: &currentVersion,
+		RemoveFromVersionId: &existingVersion,
 	})
 	return err
 }

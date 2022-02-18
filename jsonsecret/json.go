@@ -3,24 +3,36 @@ package jsonsecret
 import (
 	"encoding/json"
 	"github.com/printerlogic/go-secretsmanager-rotate"
+	"reflect"
 )
 
-// Parser is a rotate.SecretParser that will unmarshal into structs returned by the backing factory function.
-// The backing factory function must return an instance value as the pointer will be used directly with the json.Unmarshaler
-type Parser func() rotate.Secret
+// Parser returns a rotate.SecretParser that will unmarshal into structs returned by the backing factory function.
+func Parser(target rotate.Secret) rotate.SecretParser {
+	var ptr bool
+	rt := reflect.TypeOf(target)
+	if rt.Kind() == reflect.Ptr {
+		ptr = true
+		rt = rt.Elem()
+	}
+	return &parser{target: rt, asPtr: ptr}
+}
 
-func (factory Parser) Parse(s rotate.Secret) (rotate.Secret, error) {
+type parser struct {
+	// target is the pointer type for the rotate.Secret
+	target reflect.Type
+	asPtr  bool
+}
+
+func (p *parser) Parse(s rotate.Secret) (rotate.Secret, error) {
 	data, err := s.Value()
 	if err != nil {
 		return s, err
 	}
 
-	target := factory()
-	err = json.Unmarshal(data, &target)
-	return target, nil
-}
-
-// This ensures that our Parser is a compliant rotate.SecretParser
-func _(parser Parser) rotate.SecretParser {
-	return parser
+	target := reflect.New(p.target)
+	err = json.Unmarshal(data, target.Interface())
+	if !p.asPtr {
+		return target.Elem().Interface().(rotate.Secret), err
+	}
+	return target.Interface().(rotate.Secret), err
 }
